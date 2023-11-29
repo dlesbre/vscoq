@@ -1,22 +1,21 @@
 (library
  (name dm)
  (public_name vscoq-language-server.dm)
- (modules delegationManager parTactic documentManager document executionManager scheduler types searchQuery completionItems completionSuggester priorityManager)
- (flags -rectypes)
- (libraries coq-core.sysinit coq-core.vernac coq-core.parsing sel lsp))
+ (modules :standard \ vscoqtop_proof_worker vscoqtop_tactic_worker)
+ (libraries base coq-core.sysinit coq-core.vernac coq-core.parsing lsp sel protocol language))
 
 (executable
  (name vscoqtop_proof_worker)
  (public_name vscoqtop_proof_worker.opt)
  (modules vscoqtop_proof_worker)
- (flags -rectypes -linkall)
+ (flags -linkall)
  (package vscoq-language-server)
- (libraries coq-core.sysinit coq-core.tactics dm lsp))
+ (libraries coq-core.sysinit coq-core.tactics lsp dm protocol))
 
 (executable
  (name vscoqtop_tactic_worker)
  (public_name vscoqtop_tactic_worker.opt)
  (modules vscoqtop_tactic_worker)
- (flags -rectypes -linkall)
+ (flags -linkall)
  (package vscoq-language-server)
- (libraries coq-core.sysinit coq-core.tactics dm lsp))
+ (libraries coq-core.sysinit coq-core.tactics lsp dm protocol))

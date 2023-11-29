@@ -1,25 +1,20 @@
 import React, {FunctionComponent} from 'react';
 
-import classes from './Hypothesis.module.css';
+import classes from './PpString.module.css';
+import { Hyp } from '../../types';
+import { fragmentOfPpString } from '../../utilities/pp';
 
 type HypothesisProps = {
-    identifiers: string[], 
-    type: string,
+    content: Hyp;
 };
 
 const hypothesis: FunctionComponent<HypothesisProps> = (props) => {
     
-    const {identifiers, type} = props;
-
-    const idString = identifiers.slice(1).reduce((pre, curr) => {
-        return pre + ", " + curr;
-    }, identifiers[0]);
+    const {content} = props;
 
     return (
         <div className={classes.Hypothesis}>
-            <label className={classes.Identifier}>{idString}</label>
-            <label className={classes.Separator}> : </label>
-            <span className={classes.Type}>{type}</span>
+            <span className={classes.Content}>{fragmentOfPpString(content, classes)}</span>
             <br/>
         </div>
     );

@@ -12,10 +12,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
-let debug_par = CDebug.create ~name:"vscoq.parTactic" ()
+open Types
 
-let log msg = debug_par Pp.(fun () ->
-  str @@ Format.asprintf "        [%d] %s" (Unix.getpid ()) msg)
+let Log log = Log.mk_log "parTactic"
 
 type sentence_id = Stateid.t
 
@@ -26,8 +25,8 @@ module TacticJob = struct
     | Error of Pp.t
   type update_request =
     | UpdateSolution of Evar.t * solution
-    | AppendFeedback of sentence_id * (Feedback.level * Loc.t option * Pp.t)
-  let appendFeedback id fb = AppendFeedback(id,fb)
+    | AppendFeedback of Feedback.route_id * sentence_id * (Feedback.level * Loc.t option * Pp.t)
+  let appendFeedback (rid,id) fb = AppendFeedback(rid,id,fb)
 
   type t =  {
     state    : Vernacstate.t;
@@ -63,7 +62,7 @@ let assign_tac ~abstract res : unit Proofview.tactic =
 
 let command_focus = Proof.new_focus_kind ()
 
-let worker_solve_one_goal { TacticJob.state; ast; goalno; goal; name } ~send_back =
+let worker_solve_one_goal { TacticJob.state; ast; goalno; goal } ~send_back =
   let focus_cond = Proof.no_cond command_focus in
   let pr_goal g = string_of_int (Evar.repr g) in
   Vernacstate.unfreeze_full_state state;
@@ -93,32 +92,34 @@ let worker_solve_one_goal { TacticJob.state; ast; goalno; goal; name } ~send_bac
   with e when CErrors.noncritical e ->
     send_back (TacticJob.UpdateSolution (goal, TacticJob.Error Pp.(CErrors.print e ++ spc() ++ str "(for subgoal "++int goalno ++ str ")")))
 
-let feedback_id = ref Stateid.dummy
-let set_id_for_feedback id = feedback_id := id
+let feedback_id = ref (0,Stateid.dummy)
+let set_id_for_feedback rid sid = feedback_id := (rid,sid)
 
 let interp_par ~pstate ~info ast ~abstract ~with_end_tac : Declare.Proof.t =
-  let state = Vernacstate.freeze_full_state ~marshallable:true in
+  let state = Vernacstate.freeze_full_state () in
+  let state = Vernacstate.Stm.make_shallow state in
   let queue = Queue.create () in
   let events, job_ids = List.split @@
     Declare.Proof.fold pstate ~f:(fun p ->
      (Proof.data p).Proof.goals |> CList.map_i (fun goalno goal ->
        let job = { TacticJob.state; ast; goalno = goalno + 1; goal; name = string_of_int (Evar.repr goal)} in
-       let job_id = DelegationManager.mk_job_id !feedback_id in
-       let e, cancellation =
-         TacticWorker.worker_available ~jobs:queue ~fork_action:worker_solve_one_goal in
-       Queue.push (job_id, cancellation, job) queue;
+       let job_id = DelegationManager.mk_job_handle !feedback_id in
+       let e =
+         TacticWorker.worker_available ~feedback_cleanup:(fun _ -> ()) (* not really correct, since there is a cleanup to be done, but it concern a sel loop which is dead (we don't come back to it), so we can ignore the problem *)
+           ~jobs:queue ~fork_action:worker_solve_one_goal in
+       Queue.push (job_id, Sel.Event.get_cancellation_handle e, job) queue;
         e, job_id
       ) 0) in
   let rec wait acc evs =
-    log @@ "waiting for events: " ^ string_of_int @@ Sel.size evs;
+    log @@ "waiting for events: " ^ string_of_int @@ Sel.Todo.size evs;
     let more_ready, evs = Sel.pop_opt evs in
     match more_ready with
     | None ->
-        if Sel.nothing_left_to_do evs then (log @@ "done waiting for tactic workers"; acc)
+        if Sel.Todo.is_empty evs then (log @@ "done waiting for tactic workers"; acc)
         else wait acc evs (* should be assert false *)
     | Some ev ->
       let result, more_events = TacticWorker.handle_event ev in
-      let evs = Sel.enqueue evs more_events in
+      let evs = Sel.Todo.add evs more_events in
       match result with
       | None -> wait acc evs
       | Some(TacticJob.UpdateSolution(ev,TacticJob.Solved(c,u))) ->
@@ -134,10 +135,11 @@ let interp_par ~pstate ~info ast ~abstract ~with_end_tac : Declare.Proof.t =
           log @@ "got error for " ^ Pp.string_of_ppcmds @@ Evar.print ev;
           List.iter DelegationManager.cancel_job job_ids;
           CErrors.user_err err in
-  let results = wait [] Sel.(enqueue empty events) in
+  let results = wait [] Sel.Todo.(add empty events) in
   Declare.Proof.map pstate ~f:(fun p ->
     let p,_,() = Proof.run_tactic (Global.env()) (assign_tac ~abstract results) p in
     p)
+  [@@warning "-27"] (* FIXME: why are info and with_end_tac unused? *)
 
 let () = ComTactic.set_par_implementation interp_par
 
@@ -148,6 +150,7 @@ module TacticWorkerProcess = struct
     let send_back, job = TacticWorker.setup_plumbing options in
     worker_solve_one_goal job ~send_back;
     exit 0
+    [@@warning "-27"] (* FIXME: why is st unused? *)
   let log = TacticWorker.log
 end
 

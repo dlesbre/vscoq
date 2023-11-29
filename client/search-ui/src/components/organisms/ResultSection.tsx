@@ -1,60 +1,50 @@
-import React, {FunctionComponent} from 'react';
+import React, {FunctionComponent, useMemo} from 'react';
 
-import { QueryResult  } from '../../types';
+import { QueryResultType, QueryType, SearchResultType  } from '../../types';
 
 import SearchResult from '../molecules/SearchResult';
-import AboutResult from '../molecules/AboutResult';
-import CheckResult from '../molecules/CheckResult';
-import LocateResult from '../molecules/LocateResult';
-import PrintResult from '../molecules/PrintResult';
+import QueryResult from '../molecules/QueryResult';
 
 import classes from './ResultSection.module.css';
 
 type SearchResultSectionProps = {
-    result: QueryResult,
+    result: QueryResultType,
+    toggleCollapsedHandler: (index: number) => void;
+    deleteSearchResultHandler: (index: number) => void;
     copyNameHandler: (name: string) => void;
 };
 
 const searchResultSection: FunctionComponent<SearchResultSectionProps> = (props) => {
 
-    const {result, copyNameHandler} = props;
+    const {result, toggleCollapsedHandler, deleteSearchResultHandler, copyNameHandler} = props;
 
-    let resultComponent = null; 
+    const renderResult = () => {
+        switch(result.type) {
+            case QueryType.search: 
+                return (result as SearchResultType).data.map((res, index) => {
+                        return <SearchResult
+                            key={index}
+                            result={res}
+                            copyNameHandler={copyNameHandler}
+                            toggleCollapsedHandler={() => toggleCollapsedHandler(index)}
+                            deleteResultHandler={() => deleteSearchResultHandler(index)}
+                        />;
+                    });
+            case QueryType.check:
+                return <QueryResult result={result} />;
 
-    if(result.type === "search") {
+            case QueryType.about:
+                return <QueryResult result={result} />;
 
-        resultComponent = result.data.map((res, index) => {
+            case QueryType.locate: 
+                return <QueryResult result={result} />;
 
-            return <SearchResult
-                key={index}
-                name={res.name} 
-                statement={res.statement} 
-                copyNameHandler={copyNameHandler}
-            />;
-    
-        });
-    
-    }
-
-    if(result.type === "check") {
-        
-        resultComponent = <CheckResult  statement={result.statement} />;
-
+            case QueryType.print: 
+                return <QueryResult result={result} />;
+        }
     };
 
-    if(result.type === "about") {
-            
-        resultComponent = <AboutResult  statement={result.statement} />;
-        
-    };
-
-    if(result.type === "locate") {
-        resultComponent = <LocateResult statement={result.statement} />;
-    }
-
-    if(result.type === "print") {
-        resultComponent = <PrintResult statement={result.statement} />;
-    }
+    const resultComponent = useMemo(renderResult, [result]);
 
     return (
         <div className={classes.ResultSection}>

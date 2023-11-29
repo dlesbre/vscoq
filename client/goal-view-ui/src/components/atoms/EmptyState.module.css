@@ -1,11 +1,13 @@
 .EmptyStateSection {
     display: flex;
     flex-direction: row;
-    justify-content: center;
-    align-items: center;
+    justify-content: space-between;
+    align-items: flex-start;
+    align-content: center;
 }
 
 
 .EmptyStateMessage {
+    font-family: var(--vscode-editor-font-family);
     margin-left: 6px;
 }

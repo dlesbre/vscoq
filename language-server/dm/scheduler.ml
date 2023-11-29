@@ -14,27 +14,38 @@
 
 open Types
 
-let debug_scheduler = CDebug.create ~name:"vscoq.scheduler" ()
-
-let log msg = debug_scheduler Pp.(fun () ->
-  str @@ Format.asprintf "        [%d] %s" (Unix.getpid ()) msg)
+let Log log = Log.mk_log "scheduler"
 
 module SM = CMap.Make (Stateid)
 
+type error_recovery_strategy =
+  | RSkip
+  | RAdmitted
+
+type executable_sentence = {
+  id : sentence_id;
+  ast : Synterp.vernac_control_entry;
+  classif : Vernacextend.vernac_classification;
+  synterp : Vernacstate.Synterp.t;
+  error_recovery : error_recovery_strategy;
+}
+
 type task =
-  | Skip of sentence_id
-  | Exec of sentence_id * ast * Vernacstate.Synterp.t
-  | OpaqueProof of { terminator_id: sentence_id;
+  | Skip of { id: sentence_id; error: Pp.t option }
+  | Exec of executable_sentence
+  | OpaqueProof of { terminator: executable_sentence;
                      opener_id: sentence_id;
-                     tasks_ids : sentence_id list;
+                     proof_using: Vernacexpr.section_subset_expr;
+                     tasks : executable_sentence list; (* non empty list *)
                    }
-  | Query of sentence_id * ast * Vernacstate.Synterp.t
+  | Query of executable_sentence
+
 (*
   | SubProof of ast list
   | ModuleWithSignature of ast list
 *)
 type proof_block = {
-  proof_sentences : sentence_id list;
+  proof_sentences : executable_sentence list;
   opener_id : sentence_id;
 }
 
@@ -60,13 +71,13 @@ let initial_schedule = {
   dependencies = SM.empty;
 }
 
-let push_proof_sentence id block =
-  { block with proof_sentences = id :: block.proof_sentences }
+let push_executable_proof_sentence ex_sentence block =
+  { block with proof_sentences = ex_sentence :: block.proof_sentences }
 
-let push_id id st =
+let push_ex_sentence ex_sentence st =
   match st.proof_blocks with
-  | [] -> { st with document_scope = id :: st.document_scope }
-  | l::q -> { st with proof_blocks = push_proof_sentence id l :: q }
+  | [] -> { st with document_scope = ex_sentence.id :: st.document_scope }
+  | l::q -> { st with proof_blocks = push_executable_proof_sentence ex_sentence l :: q }
 
 (* Not sure what the base_id for nested lemmas should be, e.g.
 Lemma foo : X.
@@ -81,26 +92,26 @@ let base_id st =
   | block :: l ->
     begin match block.proof_sentences with
     | [] -> aux l
-    | hd :: _ -> Some hd
+    | ex_sentence :: _ -> Some ex_sentence.id
     end
   in
   aux st.proof_blocks
 
-let open_proof_block id st =
-  let st = push_id id st in
-  let block = { proof_sentences = []; opener_id = id } in
+let open_proof_block ex_sentence st =
+  let st = push_ex_sentence ex_sentence st in
+  let block = { proof_sentences = []; opener_id = ex_sentence.id } in
   { st with proof_blocks = block :: st.proof_blocks }
 
-let extrude_side_effect id st =
-  let document_scope = id :: st.document_scope in
-  let proof_blocks = List.map (push_proof_sentence id) st.proof_blocks in
+let extrude_side_effect ex_sentence st =
+  let document_scope = ex_sentence.id :: st.document_scope in
+  let proof_blocks = List.map (push_executable_proof_sentence ex_sentence) st.proof_blocks in
   { st with document_scope; proof_blocks }
 
 let flatten_proof_block st =
   match st.proof_blocks with
   | [] -> st
   | [block] ->
-    let document_scope = CList.uniquize @@ block.proof_sentences @ st.document_scope in
+    let document_scope = CList.uniquize @@ List.map (fun x -> x.id) block.proof_sentences @ st.document_scope in
     { st with document_scope; proof_blocks = [] }
   | block1 :: block2 :: tl -> (* Nested proofs. TODO check if we want to extrude one level or directly to document scope *)
     let proof_sentences = CList.uniquize @@ block1.proof_sentences @ block2.proof_sentences in
@@ -108,72 +119,108 @@ let flatten_proof_block st =
     { st with proof_blocks = block2 :: tl }
 
 (*
-Lemma foo : XX.
-Proof.
-Definition y := True.
-Lemma bar : y.
-Proof.
-exact I.
-Qed.
+[1] Lemma foo : XX.
+[2] Proof.
+[3] Definition y := True.
+[4] Lemma bar : y.
+[5] Proof.
+[6] exact I.
+[7] Qed.
 
-apply bar.
+[8] apply bar.
 
-Qed.
+[9] Qed.
 
 -> We don't delegate
 
-129: Exec(127, Qed)
-122: Exec(121, Lemma bar : XX)
+8: Exec(127, Qed)
+2: Exec(1, Lemma foo : XX)
 
 --> We delegate only pure proofs
 *)
 
 (* FIXME handle commands with side effects followed by `Abort` *)
-let push_state id ast synterp_st classif st =
-  let open Vernacextend in
-  match classif with
-  | VtStartProof _ -> base_id st, open_proof_block id st, Exec(id,ast,synterp_st)
-  | VtQed (VtKeep (VtKeepAxiom | VtKeepOpaque)) when st.section_depth = 0 -> (* TODO do not delegate if command with side effect inside the proof or nested lemmas *)
-    begin match st.proof_blocks with
-    | [] ->
-      (* can happen on ill-formed documents *)
-      base_id st, push_id id st, Exec(id,ast,synterp_st)
-    | block :: pop ->
-      let terminator_id = id in
-      let tasks_ids = List.rev block.proof_sentences in
-      let st = { st with proof_blocks = pop } in
-      base_id st, push_id id st, OpaqueProof { terminator_id; opener_id = block.opener_id; tasks_ids }
-    end
-  | VtQed _ ->
-    let st = flatten_proof_block st in
-    base_id st, push_id id st, Exec(id,ast,synterp_st)
-  | VtQuery -> (* queries have no impact, we don't push them *)
-    base_id st, st, Query(id, ast, synterp_st)
-  | VtProofStep _ ->
-    base_id st, push_id id st, Exec(id, ast, synterp_st)
-  | VtSideff _ ->
-    base_id st, extrude_side_effect id st, Exec(id,ast,synterp_st)
-  | VtMeta -> assert false
-  | VtProofMode _ -> assert false
 
-  (*
+let find_proof_using (ast : Synterp.vernac_control_entry) =
+  match ast.CAst.v.expr with
+  | VernacSynPure(VernacProof(_,Some e)) -> Some e
+  | _ -> log "no ast for proof using, looking at a default";
+         Proof_using.get_default_proof_using ()
+
+(* TODO: There is also a #[using] annotation on the proof opener we should
+   take into account (but it is not on a proof sentence, but rather
+   on the proof opener). Ask maxime if the attribute is processed during
+   synterp, and if so where its value is stored. *)
+let find_proof_using_annotation { proof_sentences } =
+  match List.rev proof_sentences with
+  | ex_sentence :: _ -> find_proof_using ex_sentence.ast
+  | _ -> None
+
+
+
+let is_opaque_flat_proof terminator section_depth block =
+  let open Vernacextend in
+  let has_side_effect { classif } = match classif with
+    | VtStartProof _ | VtSideff _ | VtQed _ | VtProofMode _ | VtMeta -> true
+    | VtProofStep _ | VtQuery -> false
+  in
+  if List.exists has_side_effect block.proof_sentences then None
+  else match terminator with
+  | VtDrop -> Some Vernacexpr.SsEmpty
+  | VtKeep VtKeepDefined -> None
+  | VtKeep (VtKeepAxiom | VtKeepOpaque) ->
+      if section_depth = 0 then Some Vernacexpr.SsEmpty
+      else find_proof_using_annotation block
+
+let push_state id ast synterp classif st =
+  let open Vernacextend in
+  let ex_sentence = { id; ast; classif; synterp; error_recovery = RSkip } in
+  match classif with
+  | VtStartProof _ ->
+    base_id st, open_proof_block ex_sentence st, Exec ex_sentence
+  | VtQed terminator_type ->
+    log "scheduling a qed";
+    begin match st.proof_blocks with
+    | [] -> (* can happen on ill-formed documents *)
+      base_id st, push_ex_sentence ex_sentence st, Exec ex_sentence
+    | block :: pop ->
+      (* TODO do not delegate if command with side effect inside the proof or nested lemmas *)
+      match is_opaque_flat_proof terminator_type st.section_depth block with
+      | Some proof_using ->
+        log "opaque proof";
+        let terminator = { ex_sentence with error_recovery = RAdmitted } in
+        let tasks = List.rev block.proof_sentences in
+        let st = { st with proof_blocks = pop } in
+        base_id st, push_ex_sentence ex_sentence st, OpaqueProof { terminator; opener_id = block.opener_id; tasks; proof_using }
+      | None ->
+        log "not an opaque proof";
+        let st = flatten_proof_block st in
+        base_id st, push_ex_sentence ex_sentence st, Exec ex_sentence
+    end
+  | VtQuery -> (* queries have no impact, we don't push them *)
+    base_id st, st, Query ex_sentence
+  | VtProofStep _ ->
+    base_id st, push_ex_sentence ex_sentence st, Exec ex_sentence
+  | VtSideff _ ->
+    base_id st, extrude_side_effect ex_sentence st, Exec ex_sentence
+  | VtMeta -> base_id st, push_ex_sentence ex_sentence st, Skip { id; error = Some (Pp.str "Unsupported command") }
+  | VtProofMode _ -> base_id st, push_ex_sentence ex_sentence st, Skip { id; error = Some (Pp.str "Unsupported command") }
+
 let string_of_task (task_id,(base_id,task)) =
   let s = match task with
-  | Skip id -> "Skip " ^ Stateid.to_string id
-  | Exec (id, ast) -> "Exec " ^ Stateid.to_string id ^ " (" ^ (Pp.string_of_ppcmds @@ Ppvernac.pr_vernac ast) ^ ")"
-  | OpaqueProof { terminator_id; tasks_ids } -> "OpaqueProof [" ^ Stateid.to_string terminator_id ^ " | " ^ String.concat "," (List.map Stateid.to_string tasks_ids) ^ "]"
-  | Query(id,ast) -> "Query " ^ Stateid.to_string id
+  | Skip { id } -> Format.sprintf "Skip %s" (Stateid.to_string id)
+  | Exec { id } -> Format.sprintf "Exec %s" (Stateid.to_string id)
+  | OpaqueProof { terminator; tasks } -> Format.sprintf "OpaqueProof [%s | %s]" (Stateid.to_string terminator.id) (String.concat "," (List.map (fun task -> Stateid.to_string task.id) tasks))
+  | Query { id } -> Format.sprintf "Query %s" (Stateid.to_string id)
   in
   Format.sprintf "[%s] : [%s] -> %s" (Stateid.to_string task_id) (Option.cata Stateid.to_string "init" base_id) s
-  *)
 
-let string_of_state st =
-  let scopes = (List.map (fun b -> b.proof_sentences) st.proof_blocks) @ [st.document_scope] in
+let _string_of_state st =
+  let scopes = (List.map (fun b -> List.map (fun x -> x.id) b.proof_sentences) st.proof_blocks) @ [st.document_scope] in
   String.concat "|" (List.map (fun l -> String.concat " " (List.map Stateid.to_string l)) scopes)
 
-let schedule_sentence (id,oast) st schedule =
-  let base, st, task = match oast with
-    | Some (ast,classif,synterp_st) ->
+let schedule_sentence (id, (ast, classif, synterp_st)) st schedule =
+  let base, st, task = 
       let open Vernacexpr in
       let (base, st, task) = push_state id ast synterp_st classif st in
       begin match ast.CAst.v.expr with
@@ -183,7 +230,6 @@ let schedule_sentence (id,oast) st schedule =
         (base, { st with section_depth = max 0 (st.section_depth - 1) }, task)
       | _ -> (base, st, task)
       end
-    | None -> base_id st, st, Skip id
   in
 (*
   log @@ "Scheduled " ^ (Stateid.to_string id) ^ " based on " ^ (match base with Some id -> Stateid.to_string id | None -> "no state");
@@ -230,8 +276,6 @@ let dependents schedule id =
 7. Check x.
 *)
 
-(*
 let string_of_schedule schedule =
   "Task\n" ^
   String.concat "\n" @@ List.map string_of_task @@ SM.bindings schedule.tasks
-  *)

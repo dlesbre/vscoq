@@ -11,13 +11,14 @@
 (*   See LICENSE file.                                                    *)
 (*                                                                        *)
 (**************************************************************************)
-open Lsp.LspData
+open Protocol.LspWrapper
 
-val query_feedback : notification Sel.event
+val query_feedback : notification Sel.Event.t
 
 val interp_search :
   id:string ->
   Environ.env ->
   Evd.evar_map ->
-  (bool * Vernacexpr.search_request) ->
-  notification Sel.event list
+  (bool * Vernacexpr.search_request) list ->
+  Vernacexpr.search_restriction ->
+  notification Sel.Event.t list

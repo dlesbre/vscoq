@@ -7,28 +7,37 @@ export const checkVersion = (client: Client, context: ExtensionContext) => {
     const extensionVersion = context.extension.packageJSON.version;
     const initializeResult = client.initializeResult;
     if(initializeResult !== undefined) {
-        const serverInfo =client.initializeResult?.serverInfo;
+        const serverInfo = client.initializeResult?.serverInfo;
         if(serverInfo !== undefined) {
             const {name, version} = serverInfo;
-            client.writeToChannel("Intialized server " + name + " [" + version + "]");
+            Client.writeToVscoq2Channel("[Versioning] Intialized server " + name + " [" + version + "]");
             if(!checkCompat(extensionVersion, version)) {
-                window.showErrorMessage(name + ' ' + version + ' and vscoq ' + extensionVersion + ' are not compatible.'); 
+                window.showErrorMessage('This version of VsCoq requires version ' + versionRequirements[extensionVersion] + ' of ' + name + '. Found version: ' + version);
             }
         } else {
-            client.writeToChannel("Could not run compatibility tests: failed to get serverInfo");
+            Client.writeToVscoq2Channel("Could not run compatibility tests: failed to get serverInfo");
         }  
     } else {
-        client.writeToChannel("Could not run compatibility tests: failed to recieve initializeResult");
+        Client.writeToVscoq2Channel("Could not run compatibility tests: failed to recieve initializeResult");
     }
 
+};
+
+type VersionReq = {
+    [index: string]: string
+};
+
+/*  Version requirements for the client. Syntax is client version : minimum server version */
+const versionRequirements : VersionReq = {
+    '2.0.0': '2.0.0', 
+    '2.0.1': '2.0.0', 
+    '2.0.2': '2.0.0'
 };
 
 //We will add version ranges as we start releasing
 const checkCompat = (clientVersion: string, serverVersion: string|undefined) => {
     if(serverVersion !== undefined) {
-        if(compareVersions(clientVersion, '1.0.0') >= 1) {
-            return compareVersions(serverVersion, '1.0.0') >= 1;
-        }
+        return compareVersions(serverVersion, versionRequirements[clientVersion]) >= 0;
     }
     return false;
 };

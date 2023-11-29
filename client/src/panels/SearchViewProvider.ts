@@ -7,11 +7,12 @@ import {
     SearchCoqHandshake, 
     SearchCoqRequest, 
     SearchCoqResult,
+    QueryError,
     CheckCoqRequest,
     CheckCoqResponse,
     LocateCoqRequest,
     LocateCoqResponse,
-    PrintCoqRequest, 
+    PrintCoqRequest,
     PrintCoqResponse
 } from '../protocol/types';
 import {
@@ -20,13 +21,18 @@ import {
 } from 'vscode-languageclient';
 
 import Client from '../client';
+
+interface Query {
+    type: string; 
+    pattern: string; 
+}
         
 export default class SearchViewProvider implements vscode.WebviewViewProvider {
 
     public static readonly viewType = 'vscoq.search'; 
-    private static _channel: any = vscode.window.createOutputChannel('vscoq-query-panel');
 
     private _view?: vscode.WebviewView; 
+    private _queries: Query[] = [];
 
     constructor(
         private _extensionUri: vscode.Uri,
@@ -60,10 +66,35 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
 
     }
 
+    public addTab() {
+        this._view?.webview.postMessage({"command": "addTab"});
+    };
+
+    public collapseAll() {
+        vscode.commands.executeCommand('setContext', 'vscoq.expandedQueries', false);
+        this._view?.webview.postMessage({"command": "collapseAll"});
+    };
+
+    public expandAll() {
+        vscode.commands.executeCommand('setContext', 'vscoq.expandedQueries', true);
+        this._view?.webview.postMessage({"command": "expandAll"});
+    };
+
     public launchQuery(pattern: string, type: string) {
         const query = { "pattern": pattern, "type": type};
-        this._view?.webview.postMessage({"command": "query", "query": query});
+        if(this._view && this._queries.length === 0) {
+            this._view?.webview.postMessage({"command": "query", "query": query});
+        } else {
+            this._queries.push(query);
+        }
     };
+
+    public dequeueQueries() {
+        while(this._queries.length > 0) {
+            const query = this._queries.shift();
+            this._view?.webview.postMessage({"command": "query", "query": query});
+        }
+    }
 
     public renderSearchResult(searchResult: SearchCoqResult) {
         this._view?.webview.postMessage({"command": "searchResponse", "result": searchResult});
@@ -115,6 +146,9 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
         switch (command) {
             // Add more switch case statements here as more webview message commands
             // are created within the webview context (i.e. inside media/main.js)
+            case "ready": 
+                this.dequeueQueries();
+
             case "coqQuery":
 
                 if(version && uri && position) {
@@ -132,7 +166,11 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                         const req = new RequestType<SearchCoqRequest, SearchCoqHandshake, void>("vscoq/search");
                         client.sendRequest(req, params).then(
                             (handshake: SearchCoqHandshake) => {
-                                webview.postMessage({"command": "launchedSearch", "text": handshake});
+                                webview.postMessage({"command": "launchedSearch"});
+                            }, 
+                            (err: QueryError) => {
+                                const error = {"code": err.code, "message": err.message};
+                                webview.postMessage({"command": "searchError", "error": error, "id": id});
                             }
                         );
                     }
@@ -145,6 +183,10 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                             (result: AboutCoqResponse) => {
                                 const notification = {"statement": result, "id": id};
                                 webview.postMessage({"command": "aboutResponse", "result": notification});
+                            }, 
+                            (err: QueryError) => {
+                                const error = {"code": err.code, "message": err.message};
+                                webview.postMessage({"command": "searchError", "error": error, "id": id});
                             }
                         );
                     }
@@ -157,6 +199,10 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                             (result: CheckCoqResponse) => {
                                 const notification = {"statement": result, "id": id};
                                 webview.postMessage({"command": "checkResponse", "result": notification});
+                            }, 
+                            (err: QueryError) => {
+                                const error = {"code": err.code, "message": err.message};
+                                webview.postMessage({"command": "searchError", "error": error, "id": id});
                             }
                         );
                     }
@@ -169,6 +215,10 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                             (result: LocateCoqResponse) => {
                                 const notification = {"statement": result, "id": id};
                                 webview.postMessage({"command": "locateResponse", "result": notification});
+                            }, 
+                            (err: QueryError) => {
+                                const error = {"code": err.code, "message": err.message};
+                                webview.postMessage({"command": "searchError", "error": error, "id": id});
                             }
                         );
                     }
@@ -181,6 +231,10 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                             (result: PrintCoqResponse) => {
                                 const notification = {"statement": result, "id": id};
                                 webview.postMessage({"command": "locateResponse", "result": notification});
+                            }, 
+                            (err: QueryError) => {
+                                const error = {"code": err.code, "message": err.message};
+                                webview.postMessage({"command": "searchError", "error": error, "id": id});
                             }
                         );
                     }
@@ -196,7 +250,17 @@ export default class SearchViewProvider implements vscode.WebviewViewProvider {
                 vscode.window.showInformationMessage('Successfuly copied command ' + message.text + ' to clipboard.');
                 return;
 
+            case "toggleExpandButton":
+                vscode.commands.executeCommand('setContext', 'vscoq.expandedQueries', message.value);
+                return;
 
+            case "enableCollapseButton":
+                vscode.commands.executeCommand('setContext', 'vscoq.hasSearchResults', true);
+                return;
+
+            case "disableCollapseButton":
+                vscode.commands.executeCommand('setContext', 'vscoq.hasSearchResults', false);
+                return;
         }
       }
     );

@@ -23,14 +23,27 @@ type state
 
 val initial_state : state
 
+type error_recovery_strategy =
+  | RSkip
+  | RAdmitted
+
+type executable_sentence = {
+  id : sentence_id;
+  ast : Synterp.vernac_control_entry;
+  classif : Vernacextend.vernac_classification;
+  synterp : Vernacstate.Synterp.t;
+  error_recovery : error_recovery_strategy;
+}
+
 type task =
-  | Skip of sentence_id
-  | Exec of sentence_id * ast * Vernacstate.Synterp.t
-  | OpaqueProof of { terminator_id: sentence_id;
+  | Skip of { id: sentence_id; error: Pp.t option }
+  | Exec of executable_sentence
+  | OpaqueProof of { terminator: executable_sentence;
                      opener_id: sentence_id;
-                     tasks_ids : sentence_id list;
+                     proof_using: Vernacexpr.section_subset_expr;
+                     tasks : executable_sentence list; (* non empty list *)
                    }
-  | Query of sentence_id * ast * Vernacstate.Synterp.t
+  | Query of executable_sentence
 
 type schedule
 (** Holds the dependencies among sentences and a schedule to evaluate all
@@ -38,7 +51,7 @@ type schedule
 
 val initial_schedule : schedule
 
-val schedule_sentence : sentence_id * (ast * Vernacextend.vernac_classification * Vernacstate.Synterp.t) option -> state -> schedule -> state * schedule
+val schedule_sentence : sentence_id * (Synterp.vernac_control_entry * Vernacextend.vernac_classification * Vernacstate.Synterp.t) -> state -> schedule -> state * schedule
 (** Identifies the structure of the document and dependencies between sentences
     in order to easily compute the tasks to interpret the a sentence.
     Input sentence is None on parsing error. *)
@@ -49,6 +62,4 @@ val task_for_sentence : schedule -> sentence_id -> sentence_id option * task
 val dependents : schedule -> sentence_id -> sentence_id_set
 (** Computes what should be invalidated *)
 
-(*
 val string_of_schedule : schedule -> string
-*)

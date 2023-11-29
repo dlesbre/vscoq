@@ -1,28 +1,34 @@
 opam-version: "2.0"
 name: "vscoq-language-server"
 maintainer: "Enrico Tassi <enrico.tassi@inria.fr>"
-authors: [ "Enrico Tassi" "Maxime Denes" ]
-license: "LGPL-2.1-or-later"
+authors: [ "Enrico Tassi" "Maxime Dénès" "Romain Tetley" ]
+license: "MIT"
 homepage: "https://github.com/coq-community/vscoq"
 bug-reports: "https://github.com/coq-community/vscoq/issues"
 dev-repo: "git+https://github.com/coq-community/vscoq"
 
 build: [
-  [ "sed" "-e" "/vendored_dirs coq/d" "-ibak" "dune" ]
-  [ "dune" "build" "-p" "vscoq-language-server" "--display=short"] 
+  [ "dune" "build" "-p" name "-j" jobs ]
 ]
 depends: [
-  "coq-core" {= "8.17.0+vscoq" & !with-test}
-  "coq-stdlib" {= "8.17.0+vscoq" & !with-test}
+  "ocaml" { >= "4.13.1" }
+  "dune" { >= "3.2" }
+  "coq-core" { >= "8.18" < "8.19" }
+  "coq-stdlib" { >= "8.18" < "8.19" }
   "yojson"
+  "jsonrpc" { >= "1.15"}
   "ocamlfind"
   "ppx_inline_test"
   "ppx_assert"
   "ppx_sexp_conv"
-  "ppx_yojson_conv"
+  "ppx_yojson_conv" {< "v0.16.0"}
   "ppx_deriving"
   "sexplib"
   "ppx_yojson_conv"
+  "ppx_import"
+  "result" { >= "1.5" }
+  "lsp" { >= "1.15"}
+  "sel" {>= "0.4.0"}
 ]
 synopsis: "VSCoq language server"
 description: """

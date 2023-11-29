@@ -15,57 +15,64 @@
 (** This toplevel implements an LSP-based server language for VsCode,
     used by the VsCoq extension. *)
 
-let top_debug = CDebug.create ~name:"vscoq.top" ()
-let log msg = top_debug Pp.(fun () ->
-  str @@ Format.asprintf "              [%d, %f] %s" (Unix.getpid ()) (Unix.gettimeofday ()) msg)
+let Dm.Types.Log log = Dm.Log.mk_log "top"
 
 let loop injections =
-  LspManager.init injections;
-  let rec loop (todo : LspManager.event Sel.todo) =
+  let events = LspManager.init injections in
+  let rec loop (todo : LspManager.event Sel.Todo.t) =
     (*log @@ "looking for next step";*)
     flush_all ();
     let ready, todo = Sel.pop todo in
-    let nremaining = Sel.size todo in
+    let nremaining = Sel.Todo.size todo in
     log @@ "Main loop event ready: " ^ Pp.string_of_ppcmds (LspManager.pr_event ready) ^ " , " ^ string_of_int nremaining ^ " events waiting";
     let new_events = LspManager.handle_event ready in
-    let todo = Sel.enqueue todo new_events in
+    let todo = Sel.Todo.add todo new_events in
     loop todo
   in
-  let todo = Sel.enqueue Sel.empty [LspManager.lsp] in
+  let todo = Sel.Todo.add Sel.Todo.empty events in
   try loop todo
   with exn ->
     let info = Exninfo.capture exn in
-    Feedback.msg_debug @@ Pp.str "==========================================================";
-    Feedback.msg_debug @@ CErrors.iprint_no_report info;
-    Feedback.msg_debug @@ Pp.str "==========================================================";
-;;
+    log "==========================================================";
+    log @@ Pp.string_of_ppcmds @@ CErrors.iprint_no_report info;
+    log "=========================================================="
 
 let vscoqtop_specific_usage = {
   Boot.Usage.executable_name = "vscoqtop";
   extra_args = "";
-  extra_options = "";
+  extra_options = {|
+VSCoq options are:
+  -vscoq-d c1,..,cn      enable debugging for vscoq components c1 ... cn.
+                         Known components:
+                           all (shorthand for all components)
+                           init (all components but only during initialization)
+|} ^ "\t\t\t   " ^ String.concat "\n\t\t\t   " (Dm.Log.logs ()) ^ {|
+  
+|}
 }
+
+let rec skip_xd acc = function
+  | [] -> (), List.rev acc
+  | "-vscoq-d" :: _ :: rest -> skip_xd acc rest
+  | x :: rest -> skip_xd (x::acc) rest
 
 let _ =
   Coqinit.init_ocaml ();
-  let initialization_feeder = Feedback.add_feeder (fun fb ->
-    match fb.Feedback.contents with
-    | Feedback.Message(_,_,msg) -> Printf.eprintf "%s\n" (Pp.string_of_ppcmds msg)
-    | _ -> ()
-  ) in
+  log "------------------ begin ---------------";
   let initial_args =
-    match CoqProject_file.find_project_file ~from:(Unix.getcwd ()) ~projfile_name:"_CoqProject" with
-    | None -> Coqargs.default
+    let cwd = Unix.getcwd () in
+    match CoqProject_file.find_project_file ~from:cwd ~projfile_name:"_CoqProject" with
+    | None ->
+      log (Printf.sprintf "No project file found in %s" cwd);
+      Coqargs.default
     | Some f ->
       let project = CoqProject_file.read_project_file ~warning_fn:(fun _ -> ()) f in
       let args = CoqProject_file.coqtop_args_from_project project in
-      log @@ "Args from project file: " ^ String.concat " " args;
+      log (Printf.sprintf "Arguments from project file %s: %s" f (String.concat " " args));
       fst @@ Coqargs.parse_args ~usage:vscoqtop_specific_usage ~init:Coqargs.default args in
-  let opts, () = Coqinit.parse_arguments ~usage:vscoqtop_specific_usage ~initial_args ~parse_extra:(fun x -> (), x) () in
+  let opts, () = Coqinit.parse_arguments ~usage:vscoqtop_specific_usage ~initial_args ~parse_extra:(fun x -> skip_xd [] x) () in
   let injections = Coqinit.init_runtime opts in
-  Safe_typing.allow_delayed_constants := true;
+  Safe_typing.allow_delayed_constants := true; (* Needed to delegate or skip proofs *)
   Flags.quiet := true;
   Sys.(set_signal sigint Signal_ignore);
-  Exninfo.record_backtrace true;
-  Feedback.del_feeder initialization_feeder;
   loop injections

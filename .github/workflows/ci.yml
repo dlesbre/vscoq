@@ -1,6 +1,8 @@
 on:
   push:
-    branches: [ main ]
+    branches: [ main, coq-master ]
+    tags:
+      - "v*.*.*"
   pull_request:
   workflow_dispatch:
 
@@ -29,8 +31,6 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-      with:
-        submodules: 'true'
     - name: Configure Dune
       run: |
         mkdir -p ~/.config/dune
@@ -38,45 +38,38 @@ jobs:
         (lang dune 3.2)
         (display short)
         EOF
-    - uses: cachix/install-nix-action@v18
+    - uses: cachix/install-nix-action@v22
       with:
         nix_path: nixpkgs=channel:nixos-unstable
-    - run: nix build '.?submodules=1'
-    - run: nix develop .#vscoq-language-server -c bash -c "cd language-server && make world"
+    - run: nix develop .#vscoq-language-server -c bash -c "cd language-server && dune build"
     - run: nix develop .#vscoq-client -c bash -c "cd client && yarn run install:all && yarn run build:all && yarn run compile"
     - run: xvfb-run nix develop .#vscoq-client -c bash -c "cd client && yarn test"
       if: runner.os == 'Linux'
     - run: nix develop .#vscoq-client -c bash -c "cd client && yarn test"
       if: runner.os != 'Linux'
+    - if: ${{ failure() }}
+      run: cat /tmp/vscoq_init_log.*
 
   install-opam:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        ocaml-compiler: [4.14.x]
+        ocaml-compiler: [4.13.x]
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-      with:
-        submodules: 'true'
 
     - name: Use OCaml ${{ matrix.ocaml-compiler }}
       uses: avsm/setup-ocaml@v2
       with:
         ocaml-compiler: ${{ matrix.ocaml-compiler }}
 
-    - name: Install Coq
-      env:
-        OPAMYES: true
-      run: |
-        opam pin add coq-core.8.17.0+vscoq ./language-server/coq
-        opam pin add coq-stdlib.8.17.0+vscoq ./language-server/coq
-      
     - name: Install vscoq-language-server
       env:
         OPAMYES: true
       run: |
+        opam repo add coq-core-dev https://coq.inria.fr/opam/core-dev
         opam pin add vscoq-language-server ./language-server/ --with-doc --with-test -y
 
     - run: |
@@ -93,19 +86,45 @@ jobs:
       env:
         VSCOQPATH: ${{ env.vscoqtop }}
         VSCOQARGS: "-bt"
+    - if: ${{ failure() }}
+      run: cat /tmp/vscoq_init_log.*
 
+  install-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Set git to use LF
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Build language server
+      run: .\language-server\build-windows-platform.bat
+      env:
+        COQ_VERSION: V8.18+rc1
+
+    - run: C:\ci\cygwin64\bin\bash.exe --login -c 'echo vscoqtop=$(cygpath -m $(which vscoqtop))' >> $Env:GITHUB_ENV
+
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - run: cd client && yarn run package && yarn test
+      env:
+        VSCOQPATH: ${{ env.vscoqtop }}
+        VSCOQARGS: "-bt"
 
   dev-setup-opam:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        ocaml-compiler: [4.14.x]
+        ocaml-compiler: [4.13.x]
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-      with:
-        submodules: 'true'
 
     - name: Use OCaml ${{ matrix.ocaml-compiler }}
       uses: avsm/setup-ocaml@v2
@@ -116,17 +135,18 @@ jobs:
       env:
         OPAMYES: true
       run: |
-        opam install ./language-server/coq/coq-core.opam          --deps-only
+        opam repo add coq-core-dev https://coq.inria.fr/opam/core-dev
         opam install ./language-server/vscoq-language-server.opam --deps-only --with-doc --with-test
       
     - name: Build vscoq-language-server
       run: |
         eval $(opam env)
-        cd language-server && make
+        cd language-server && dune build
 
-    - run: |
+    - name: Unit tests
+      run: |
         eval $(opam env)
-        cd language-server && dune exec vscoqtop -- -v
+        cd language-server && dune runtest
 
     - uses: actions/setup-node@v3
       with:
@@ -134,3 +154,32 @@ jobs:
 
     - run: cd client && yarn run install:all && yarn run build:all && yarn run compile
     - run: cd client && xvfb-run yarn test
+    - if: ${{ failure() }}
+      run: cat /tmp/vscoq_init_log.*
+
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-extension, nix-dev-build, install-opam, install-windows, dev-setup-opam]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Inject slug/short variables
+        uses: rlespinasse/github-slug-action@v4
+
+      - name: Create language-server archive
+        run: |
+          cd language-server
+          VERSION="${GITHUB_REF_NAME_SLUG#v}"
+          git archive -o ../vscoq-language-server-$VERSION.tar.gz --prefix=vscoq-language-server-$VERSION/ $GITHUB_SHA .
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: vscoq-language-server-*.tar.gz
+          fail_on_unmatched_files: true
+          draft: true
+          prerelease: false
+          generate_release_notes: true

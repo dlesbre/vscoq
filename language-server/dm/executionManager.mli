@@ -13,8 +13,7 @@
 (**************************************************************************)
 
 open Types
-open CompletionItems
-open Lsp.LspData
+open Protocol
 
 (** The event manager is in charge of the actual event of tasks (as
     defined by the scheduler), caching event states and invalidating
@@ -27,36 +26,53 @@ type delegation_mode =
 
 type options = {
   delegation_mode : delegation_mode;
+  completion_options : Settings.Completion.t;
+  enableDiagnostics : bool;
 }
-val default_options : options
+
+val is_diagnostics_enabled: unit -> bool
 
 (** Execution state, includes the cache *)
 type state
-val init : Vernacstate.t -> state
-val set_options : state -> options -> state
+type event
+type events = event Sel.Event.t list
+
+type feedback_message = Feedback.level * Loc.t option * Pp.t
+
+val pr_event : event -> Pp.t
+
+val init : Vernacstate.t -> state * event Sel.Event.t
+val destroy : state -> unit
+
+val get_options : unit -> options
+val set_options : options -> unit
+val set_default_options : unit -> unit
 val invalidate : Scheduler.schedule -> sentence_id -> state -> state
-val errors : state -> (sentence_id * (Loc.t option * string)) list
-val feedback : state -> (sentence_id * (Feedback.level * Loc.t option * string)) list
-val shift_locs : state -> int -> int -> state
+
+val error : state -> sentence_id -> (Loc.t option * Pp.t) option
+val feedback :  state -> sentence_id -> feedback_message list
+val all_errors : state -> (sentence_id * (Loc.t option * Pp.t)) list
+val all_feedback : state -> (sentence_id * feedback_message) list
+
+val shift_diagnostics_locs : state -> start:int -> offset:int -> state
 val executed_ids : state -> sentence_id list
 val is_executed : state -> sentence_id -> bool
 val is_remotely_executed : state -> sentence_id -> bool
-val get_proof : state -> sentence_id -> Proof.t option
-val get_proofview : state -> sentence_id -> Proof.data option
+
 val get_context : state -> sentence_id -> (Evd.evar_map * Environ.env) option
-val get_lemmas : Evd.evar_map -> Environ.env -> completion_item list
+val get_initial_context : state -> Evd.evar_map * Environ.env
+
+(** Returns the vernac state after the sentence *)
+val get_vernac_state : state -> sentence_id -> Vernacstate.t option
 
 (** Events for the main loop *)
-type event type events = event Sel.event list
-val pr_event : event -> Pp.t
-val local_feedback : event Sel.event
 val handle_event : event -> state -> (state option * events)
 
 (** Execution happens in two steps. In particular the event one takes only
     one task at a time to ease checking for interruption *)
 type prepared_task
-val build_tasks_for : Document.document -> state -> sentence_id -> Vernacstate.t * prepared_task list
-val execute : doc_id:Feedback.doc_id -> state -> Vernacstate.t * events * bool -> prepared_task -> (state * Vernacstate.t * events * bool)
+val build_tasks_for : Scheduler.schedule -> state -> sentence_id -> Vernacstate.t * prepared_task list
+val execute : state -> Vernacstate.t * events * bool -> prepared_task -> (state * Vernacstate.t * events * bool)
 
 (** Coq toplevels for delegation without fork *)
 module ProofWorkerProcess : sig

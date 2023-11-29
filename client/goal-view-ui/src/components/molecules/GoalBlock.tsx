@@ -3,31 +3,27 @@ import {VSCodeButton} from '@vscode/webview-ui-toolkit/react';
 import {VscChevronDown} from 'react-icons/vsc';
 
 import HypothesesBlock from './HypothesesBlock';
-import Goal from '../atoms/Goal';
+import GoalComponent from '../atoms/Goal';
 import Separator from '../atoms/Separator';
 
 import classes from './GoalBlock.module.css';
+import { Goal } from '../../types';
 
 type GoalBlockProps = {
-    goal: {
-        id: string, 
-        goal: string, 
-        hypotheses: {
-            identifiers: string[],
-            type: string, 
-        }[]
-    }
+    goal: Goal
+    goalIndicator?: string
 };
 
 const goalBlock: FunctionComponent<GoalBlockProps> = (props) => {
     
-    const {goal} = props;
+    const {goal, goalIndicator} = props;
+    const indicator = goalIndicator ? <span className={classes.GoalIndex} >({goalIndicator})</span> : null;
 
     return (
         <div className={classes.Block}>
             <HypothesesBlock hypotheses={goal.hypotheses}/>
-            <Separator />
-            <Goal goal={goal.goal}/>
+            <div className={classes.SeparatorZone}> {indicator} <Separator /> </div>
+            <GoalComponent goal={goal.goal}/>
         </div>
     );
 };
